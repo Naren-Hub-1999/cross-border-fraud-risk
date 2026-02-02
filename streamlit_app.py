@@ -4,6 +4,11 @@ import os
 import numpy as np
 
 # =====================================================
+# CRITICAL FIX: DISABLE PYARROW STRING STORAGE
+# =====================================================
+pd.options.mode.string_storage = "python"
+
+# =====================================================
 # PAGE CONFIG
 # =====================================================
 st.set_page_config(
@@ -25,15 +30,16 @@ def load_data():
         df = pd.read_csv(path, parse_dates=["transaction_timestamp"])
         df["month"] = m
         dfs.append(df)
-    return pd.concat(dfs, ignore_index=True)
+
+    df_all = pd.concat(dfs, ignore_index=True)
+
+    # Force all string columns to pure Python strings
+    for col in df_all.select_dtypes(include=["object", "string"]).columns:
+        df_all[col] = df_all[col].astype(str)
+
+    return df_all
 
 df = load_data()
-
-# =====================================================
-# FIX: STREAMLIT LARGEUTF8 / ARROW ISSUE
-# =====================================================
-for col in df.select_dtypes(include=["object"]).columns:
-    df[col] = df[col].astype(str)
 
 # =====================================================
 # TITLE
@@ -45,12 +51,9 @@ st.markdown(
     This application demonstrates a **fraud risk decision system**
     for **outbound cross-border transactions originating from India**.
 
-    The system combines:
-    - Rule-based signals  
-    - ML risk scores  
-    - Customer trust scores  
-
-    to decide whether a transaction is **Allowed**, **Reviewed**, or **Blocked**.
+    It combines **rules**, **ML risk scores**, and **customer trust scores**
+    to decide whether a transaction should be:
+    **ALLOW**, **REVIEW**, or **BLOCK**.
     """
 )
 
@@ -67,32 +70,11 @@ tab1, tab2, tab3, tab4 = st.tabs(
 with tab1:
     st.subheader("System Overview")
 
-    st.markdown(
-        """
-        **Scope**
-        - Outbound transactions from India
-        - Multiple destination countries
-        - Synthetic data for demonstration
-
-        **Decision Inputs**
-        - Rule indicators (device change, corridor risk)
-        - ML transaction risk score
-        - Monthly-updated customer trust score
-
-        **Decision Outputs**
-        - ALLOW
-        - REVIEW
-        - BLOCK
-        """
-    )
-
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Transactions", f"{len(df):,}")
     c2.metric("Unique Customers", f"{df['customer_id'].nunique():,}")
     c3.metric("Months Covered", df["month"].nunique())
     c4.metric("Destination Countries", df["destination_country"].nunique())
-
-    st.markdown("### Monthly Decision Split (%)")
 
     decision_month = (
         df.groupby(["month", "decision"])
@@ -109,6 +91,7 @@ with tab1:
         values="percentage"
     ).fillna(0)
 
+    st.markdown("### Monthly Decision Split (%)")
     st.bar_chart(pivot)
 
 # =====================================================
@@ -117,82 +100,34 @@ with tab1:
 with tab2:
     st.subheader("Decision Simulator")
 
-    st.markdown(
-        """
-        This section simulates **policy tuning**.
-        The ML model is not retrained.
-        Only decision thresholds are adjusted.
-        """
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        block_threshold = st.slider(
-            "Block if ML risk ≥",
-            min_value=0.5,
-            max_value=1.0,
-            value=0.9,
-            step=0.05
-        )
-
-    with col2:
-        review_threshold = st.slider(
-            "Review if ML risk ≥",
-            min_value=0.1,
-            max_value=0.9,
-            value=0.6,
-            step=0.05
-        )
-
-    with col3:
-        trust_override = st.slider(
-            "Auto-allow if Trust score ≥",
-            min_value=0,
-            max_value=100,
-            value=70,
-            step=5
-        )
+    block_threshold = st.slider("Block if ML risk ≥", 0.5, 1.0, 0.9, 0.05)
+    review_threshold = st.slider("Review if ML risk ≥", 0.1, 0.9, 0.6, 0.05)
+    trust_override = st.slider("Auto-allow if Trust score ≥", 0, 100, 70, 5)
 
     sim_df = df.copy()
 
-    def simulate_decision(row):
+    def simulate(row):
         if row["ml_risk_score"] >= block_threshold:
-            decision = "BLOCK"
+            d = "BLOCK"
         elif row["ml_risk_score"] >= review_threshold:
-            decision = "REVIEW"
+            d = "REVIEW"
         else:
-            decision = "ALLOW"
+            d = "ALLOW"
 
         if row["trust_score"] >= trust_override and row["ml_risk_score"] < block_threshold:
-            decision = "ALLOW"
+            d = "ALLOW"
 
-        return decision
+        return d
 
-    sim_df["simulated_decision"] = sim_df.apply(simulate_decision, axis=1)
-
-    st.markdown("### Simulated Decision Distribution (%)")
+    sim_df["simulated_decision"] = sim_df.apply(simulate, axis=1)
 
     sim_dist = sim_df["simulated_decision"].value_counts(normalize=True) * 100
     orig_dist = df["decision"].value_counts(normalize=True) * 100
 
-    d1, d2, d3 = st.columns(3)
-
-    d1.metric(
-        "ALLOW %",
-        f"{sim_dist.get('ALLOW', 0):.2f}",
-        f"{sim_dist.get('ALLOW', 0) - orig_dist.get('ALLOW', 0):+.2f}"
-    )
-    d2.metric(
-        "REVIEW %",
-        f"{sim_dist.get('REVIEW', 0):.2f}",
-        f"{sim_dist.get('REVIEW', 0) - orig_dist.get('REVIEW', 0):+.2f}"
-    )
-    d3.metric(
-        "BLOCK %",
-        f"{sim_dist.get('BLOCK', 0):.2f}",
-        f"{sim_dist.get('BLOCK', 0) - orig_dist.get('BLOCK', 0):+.2f}"
-    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("ALLOW %", f"{sim_dist.get('ALLOW',0):.2f}", f"{sim_dist.get('ALLOW',0)-orig_dist.get('ALLOW',0):+.2f}")
+    c2.metric("REVIEW %", f"{sim_dist.get('REVIEW',0):.2f}", f"{sim_dist.get('REVIEW',0)-orig_dist.get('REVIEW',0):+.2f}")
+    c3.metric("BLOCK %", f"{sim_dist.get('BLOCK',0):.2f}", f"{sim_dist.get('BLOCK',0)-orig_dist.get('BLOCK',0):+.2f}")
 
 # =====================================================
 # TAB 3 — RISK ANALYSIS
@@ -200,21 +135,17 @@ with tab2:
 with tab3:
     st.subheader("Risk Analysis")
 
-    st.markdown("### ML Risk Score Distribution")
-
     bins = np.linspace(0, 1, 21)
     hist, edges = np.histogram(df["ml_risk_score"], bins=bins)
 
-    risk_dist = pd.DataFrame({
-        "Risk Score Range": [f"{edges[i]:.2f}–{edges[i+1]:.2f}" for i in range(len(hist))],
+    risk_df = pd.DataFrame({
+        "Risk Band": [f"{edges[i]:.2f}-{edges[i+1]:.2f}" for i in range(len(hist))],
         "Transactions": hist
     })
 
-    st.bar_chart(risk_dist.set_index("Risk Score Range"))
+    st.bar_chart(risk_df.set_index("Risk Band"))
 
-    st.markdown("### Highest Risk Destination Corridors")
-
-    corridor_risk = (
+    corridor = (
         df.groupby("destination_country")["ml_risk_score"]
         .mean()
         .sort_values(ascending=False)
@@ -222,7 +153,8 @@ with tab3:
         .reset_index()
     )
 
-    st.dataframe(corridor_risk, use_container_width=True)
+    st.markdown("### Highest Risk Destination Corridors")
+    st.dataframe(corridor, use_container_width=True)
 
 # =====================================================
 # TAB 4 — TRANSACTION EXPLORER
@@ -230,37 +162,21 @@ with tab3:
 with tab4:
     st.subheader("Transaction Explorer")
 
-    month_options = sorted(df["month"].dropna().unique().tolist())
-    decision_options = sorted(df["decision"].dropna().unique().tolist())
+    months = sorted(df["month"].unique().tolist())
+    decisions = sorted(df["decision"].unique().tolist())
 
-    m_filter = st.multiselect(
-        "Month",
-        options=month_options,
-        default=month_options
-    )
+    m_filter = st.multiselect("Month", months, months)
+    d_filter = st.multiselect("Decision", decisions, decisions)
+    min_risk = st.slider("Minimum ML risk score", 0.0, 1.0, 0.0, 0.05)
 
-    d_filter = st.multiselect(
-        "Decision",
-        options=decision_options,
-        default=decision_options
-    )
-
-    min_risk = st.slider(
-        "Minimum ML risk score",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.0,
-        step=0.05
-    )
-
-    view_df = df[
+    view = df[
         (df["month"].isin(m_filter)) &
         (df["decision"].isin(d_filter)) &
         (df["ml_risk_score"] >= min_risk)
     ]
 
     st.dataframe(
-        view_df[
+        view[
             [
                 "transaction_id",
                 "month",
