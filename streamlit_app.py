@@ -13,19 +13,40 @@ st.set_page_config(
 )
 
 # =====================================================
-# LOAD DATA
+# BASE PATH FIX (IMPORTANT FOR STREAMLIT CLOUD)
 # =====================================================
-BASE_PATH = "OUTPUTS/RISK_SCORE_TXNS"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "OUTPUTS", "RISK_SCORE_TXNS")
+
+if not os.path.exists(DATA_DIR):
+    st.error(f"Data directory not found: {DATA_DIR}")
+    st.stop()
+
 MONTHS = ["2025_01", "2025_02", "2025_03"]
 
+# =====================================================
+# LOAD DATA
+# =====================================================
 @st.cache_data
 def load_data():
     dfs = []
     for m in MONTHS:
-        path = os.path.join(BASE_PATH, f"risk_scored_transactions_{m}.csv")
-        df = pd.read_csv(path, parse_dates=["transaction_timestamp"])
+        file_path = os.path.join(
+            DATA_DIR,
+            f"risk_scored_transactions_{m}.csv"
+        )
+
+        if not os.path.exists(file_path):
+            st.error(f"Missing file: {file_path}")
+            st.stop()
+
+        df = pd.read_csv(
+            file_path,
+            parse_dates=["transaction_timestamp"]
+        )
         df["month"] = m
         dfs.append(df)
+
     return pd.concat(dfs, ignore_index=True)
 
 df = load_data()
@@ -80,7 +101,7 @@ with tab1:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Transactions", f"{len(df):,}")
     c2.metric("Unique Customers", f"{df['customer_id'].nunique():,}")
-    c3.metric("Months Covered", len(df["month"].unique()))
+    c3.metric("Months Covered", df["month"].nunique())
     c4.metric("Destination Countries", df["destination_country"].nunique())
 
     st.markdown("### Monthly Decision Split (%)")
@@ -91,14 +112,18 @@ with tab1:
         .reset_index(name="count")
     )
 
-    decision_month["total"] = decision_month.groupby("month")["count"].transform("sum")
-    decision_month["percentage"] = decision_month["count"] / decision_month["total"] * 100
+    decision_month["total"] = (
+        decision_month.groupby("month")["count"].transform("sum")
+    )
+    decision_month["percentage"] = (
+        decision_month["count"] / decision_month["total"] * 100
+    )
 
-    pivot = decision_month.pivot(
-        index="month",
-        columns="decision",
-        values="percentage"
-    ).fillna(0)
+    pivot = (
+        decision_month
+        .pivot(index="month", columns="decision", values="percentage")
+        .fillna(0)
+    )
 
     st.bar_chart(pivot)
 
@@ -145,17 +170,28 @@ with tab2:
         else:
             decision = "ALLOW"
 
-        if row["trust_score"] >= trust_override and row["ml_risk_score"] < block_threshold:
+        if (
+            row["trust_score"] >= trust_override and
+            row["ml_risk_score"] < block_threshold
+        ):
             decision = "ALLOW"
 
         return decision
 
-    sim_df["simulated_decision"] = sim_df.apply(simulate_decision, axis=1)
+    sim_df["simulated_decision"] = sim_df.apply(
+        simulate_decision, axis=1
+    )
 
-    st.markdown("### Decision Outcome Comparison")
+    st.markdown("### Decision Outcome Comparison (%)")
 
-    sim_dist = sim_df["simulated_decision"].value_counts(normalize=True) * 100
-    orig_dist = df["decision"].value_counts(normalize=True) * 100
+    sim_dist = (
+        sim_df["simulated_decision"]
+        .value_counts(normalize=True) * 100
+    )
+    orig_dist = (
+        df["decision"]
+        .value_counts(normalize=True) * 100
+    )
 
     d1, d2, d3 = st.columns(3)
 
@@ -187,17 +223,21 @@ with tab3:
     hist, edges = np.histogram(df["ml_risk_score"], bins=bins)
 
     risk_dist = pd.DataFrame({
-        "Risk Score Range": [f"{edges[i]:.2f}–{edges[i+1]:.2f}" for i in range(len(hist))],
+        "Risk Score Range": [
+            f"{edges[i]:.2f}–{edges[i+1]:.2f}"
+            for i in range(len(hist))
+        ],
         "Transactions": hist
     })
 
-    st.bar_chart(risk_dist.set_index("Risk Score Range"))
+    st.bar_chart(
+        risk_dist.set_index("Risk Score Range")
+    )
 
     st.markdown("### Highest Risk Destination Corridors (from India)")
 
     corridor_risk = (
-        df.groupby(["destination_country"])
-        ["ml_risk_score"]
+        df.groupby("destination_country")["ml_risk_score"]
         .mean()
         .sort_values(ascending=False)
         .head(5)
