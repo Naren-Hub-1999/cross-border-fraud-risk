@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import os
-import matplotlib.pyplot as plt
 import numpy as np
 
 # =====================================================
@@ -13,43 +12,28 @@ st.set_page_config(
 )
 
 # =====================================================
-# BASE PATH FIX (IMPORTANT FOR STREAMLIT CLOUD)
-# =====================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "OUTPUTS", "RISK_SCORE_TXNS")
-
-if not os.path.exists(DATA_DIR):
-    st.error(f"Data directory not found: {DATA_DIR}")
-    st.stop()
-
-MONTHS = ["2025_01", "2025_02", "2025_03"]
-
-# =====================================================
 # LOAD DATA
 # =====================================================
+BASE_PATH = "OUTPUTS/RISK_SCORE_TXNS"
+MONTHS = ["2025_01", "2025_02", "2025_03"]
+
 @st.cache_data
 def load_data():
     dfs = []
     for m in MONTHS:
-        file_path = os.path.join(
-            DATA_DIR,
-            f"risk_scored_transactions_{m}.csv"
-        )
-
-        if not os.path.exists(file_path):
-            st.error(f"Missing file: {file_path}")
-            st.stop()
-
-        df = pd.read_csv(
-            file_path,
-            parse_dates=["transaction_timestamp"]
-        )
+        path = os.path.join(BASE_PATH, f"risk_scored_transactions_{m}.csv")
+        df = pd.read_csv(path, parse_dates=["transaction_timestamp"])
         df["month"] = m
         dfs.append(df)
-
     return pd.concat(dfs, ignore_index=True)
 
 df = load_data()
+
+# =====================================================
+# FIX: STREAMLIT LARGEUTF8 / ARROW ISSUE
+# =====================================================
+for col in df.select_dtypes(include=["object"]).columns:
+    df[col] = df[col].astype(str)
 
 # =====================================================
 # TITLE
@@ -61,9 +45,12 @@ st.markdown(
     This application demonstrates a **fraud risk decision system**
     for **outbound cross-border transactions originating from India**.
 
-    The system combines **rule signals**, **ML risk score**, and
-    **customer trust score** to decide whether a transaction is:
-    **Allowed**, **Reviewed**, or **Blocked**.
+    The system combines:
+    - Rule-based signals  
+    - ML risk scores  
+    - Customer trust scores  
+
+    to decide whether a transaction is **Allowed**, **Reviewed**, or **Blocked**.
     """
 )
 
@@ -83,13 +70,14 @@ with tab1:
     st.markdown(
         """
         **Scope**
-        - Outbound transactions from India to multiple destination countries
-        - Synthetic data generated for learning and demonstration
+        - Outbound transactions from India
+        - Multiple destination countries
+        - Synthetic data for demonstration
 
         **Decision Inputs**
         - Rule indicators (device change, corridor risk)
         - ML transaction risk score
-        - Customer trust score (evolves monthly)
+        - Monthly-updated customer trust score
 
         **Decision Outputs**
         - ALLOW
@@ -112,18 +100,14 @@ with tab1:
         .reset_index(name="count")
     )
 
-    decision_month["total"] = (
-        decision_month.groupby("month")["count"].transform("sum")
-    )
-    decision_month["percentage"] = (
-        decision_month["count"] / decision_month["total"] * 100
-    )
+    decision_month["total"] = decision_month.groupby("month")["count"].transform("sum")
+    decision_month["percentage"] = decision_month["count"] / decision_month["total"] * 100
 
-    pivot = (
-        decision_month
-        .pivot(index="month", columns="decision", values="percentage")
-        .fillna(0)
-    )
+    pivot = decision_month.pivot(
+        index="month",
+        columns="decision",
+        values="percentage"
+    ).fillna(0)
 
     st.bar_chart(pivot)
 
@@ -136,7 +120,8 @@ with tab2:
     st.markdown(
         """
         This section simulates **policy tuning**.
-        The model is not retrained — only decision thresholds are adjusted.
+        The ML model is not retrained.
+        Only decision thresholds are adjusted.
         """
     )
 
@@ -145,19 +130,28 @@ with tab2:
     with col1:
         block_threshold = st.slider(
             "Block if ML risk ≥",
-            0.5, 1.0, 0.9, 0.05
+            min_value=0.5,
+            max_value=1.0,
+            value=0.9,
+            step=0.05
         )
 
     with col2:
         review_threshold = st.slider(
             "Review if ML risk ≥",
-            0.1, 0.9, 0.6, 0.05
+            min_value=0.1,
+            max_value=0.9,
+            value=0.6,
+            step=0.05
         )
 
     with col3:
         trust_override = st.slider(
             "Auto-allow if Trust score ≥",
-            0, 100, 70, 5
+            min_value=0,
+            max_value=100,
+            value=70,
+            step=5
         )
 
     sim_df = df.copy()
@@ -170,28 +164,17 @@ with tab2:
         else:
             decision = "ALLOW"
 
-        if (
-            row["trust_score"] >= trust_override and
-            row["ml_risk_score"] < block_threshold
-        ):
+        if row["trust_score"] >= trust_override and row["ml_risk_score"] < block_threshold:
             decision = "ALLOW"
 
         return decision
 
-    sim_df["simulated_decision"] = sim_df.apply(
-        simulate_decision, axis=1
-    )
+    sim_df["simulated_decision"] = sim_df.apply(simulate_decision, axis=1)
 
-    st.markdown("### Decision Outcome Comparison (%)")
+    st.markdown("### Simulated Decision Distribution (%)")
 
-    sim_dist = (
-        sim_df["simulated_decision"]
-        .value_counts(normalize=True) * 100
-    )
-    orig_dist = (
-        df["decision"]
-        .value_counts(normalize=True) * 100
-    )
+    sim_dist = sim_df["simulated_decision"].value_counts(normalize=True) * 100
+    orig_dist = df["decision"].value_counts(normalize=True) * 100
 
     d1, d2, d3 = st.columns(3)
 
@@ -223,27 +206,23 @@ with tab3:
     hist, edges = np.histogram(df["ml_risk_score"], bins=bins)
 
     risk_dist = pd.DataFrame({
-        "Risk Score Range": [
-            f"{edges[i]:.2f}–{edges[i+1]:.2f}"
-            for i in range(len(hist))
-        ],
+        "Risk Score Range": [f"{edges[i]:.2f}–{edges[i+1]:.2f}" for i in range(len(hist))],
         "Transactions": hist
     })
 
-    st.bar_chart(
-        risk_dist.set_index("Risk Score Range")
-    )
+    st.bar_chart(risk_dist.set_index("Risk Score Range"))
 
-    st.markdown("### Highest Risk Destination Corridors (from India)")
+    st.markdown("### Highest Risk Destination Corridors")
 
     corridor_risk = (
         df.groupby("destination_country")["ml_risk_score"]
         .mean()
         .sort_values(ascending=False)
         .head(5)
+        .reset_index()
     )
 
-    st.dataframe(corridor_risk.reset_index())
+    st.dataframe(corridor_risk, use_container_width=True)
 
 # =====================================================
 # TAB 4 — TRANSACTION EXPLORER
@@ -251,21 +230,27 @@ with tab3:
 with tab4:
     st.subheader("Transaction Explorer")
 
+    month_options = sorted(df["month"].dropna().unique().tolist())
+    decision_options = sorted(df["decision"].dropna().unique().tolist())
+
     m_filter = st.multiselect(
         "Month",
-        df["month"].unique(),
-        df["month"].unique()
+        options=month_options,
+        default=month_options
     )
 
     d_filter = st.multiselect(
         "Decision",
-        df["decision"].unique(),
-        df["decision"].unique()
+        options=decision_options,
+        default=decision_options
     )
 
     min_risk = st.slider(
         "Minimum ML risk score",
-        0.0, 1.0, 0.0, 0.05
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.05
     )
 
     view_df = df[
